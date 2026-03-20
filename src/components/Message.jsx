@@ -30,7 +30,7 @@ function Message({ msg }) {
           🙋
         </div>
       )}
-    </div>
+    </div>     
   );
 }
 
