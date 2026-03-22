@@ -365,7 +365,7 @@ function Intro({ setScreen }) {
               className="text-center text-xs mt-4"
               style={{ color: "rgba(255,255,255,0.18)" }}
             >
-              Powered by Claude AI · Free to start
+              Powered by Amit cahuhan · Free to start
             </p>
           </div>
         </div>
