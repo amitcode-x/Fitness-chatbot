@@ -1,11 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import Message from "./Message";
 import InputBox from "./InputBox";
-import { getFitnessResponse } from "../api/gemini";
+import { getFitnessResponse, getUsageStats } from "../api/gemini";
 
 const GRID_SIZE = 24;
 
-/* ── Follow-up suggestions keyed to last user message topic ── */
 function getFollowUps(lastUserText = "") {
   const t = lastUserText.toLowerCase();
   if (t.includes("weight") || t.includes("fat") || t.includes("lose"))
@@ -21,25 +20,163 @@ function getFollowUps(lastUserText = "") {
   return ["Create a weekly workout plan", "What should I eat post-workout?", "How to stay consistent?"];
 }
 
+// ── Countdown hook ──
+function useCountdown(targetMs) {
+  const [timeLeft, setTimeLeft] = useState(targetMs);
+  useEffect(() => {
+    if (!targetMs) return;
+    const iv = setInterval(() => {
+      const diff = targetMs - Date.now();
+      setTimeLeft(Math.max(0, diff));
+    }, 1000);
+    return () => clearInterval(iv);
+  }, [targetMs]);
+
+  if (!timeLeft || timeLeft <= 0) return "Abhi shuru ho gaya! 🎉";
+  const totalSecs = Math.floor(timeLeft / 1000);
+  const hrs  = Math.floor(totalSecs / 3600);
+  const mins = Math.floor((totalSecs % 3600) / 60);
+  const secs = totalSecs % 60;
+  if (hrs > 0)  return `${hrs}h ${mins}m ${secs}s`;
+  if (mins > 0) return `${mins}m ${secs}s`;
+  return `${secs}s`;
+}
+
+// ── Limit Card component ──
+function LimitCard({ data }) {
+  const countdown = useCountdown(
+    data.type === "daily" ? data.resetAt : Date.now() + (data.msLeft || 60000)
+  );
+  const isDaily = data.type === "daily";
+
+  return (
+    <>
+      <style>{`
+        @keyframes limitCardIn {
+          from { opacity:0; transform:translateY(16px) scale(0.97); }
+          to   { opacity:1; transform:translateY(0)    scale(1);    }
+        }
+        .limit-card-anim { animation: limitCardIn 0.4s cubic-bezier(0.22,1,0.36,1) both; }
+        @keyframes countdownPulse {
+          0%,100% { opacity:1; }
+          50%      { opacity:0.6; }
+        }
+        .countdown-pulse { animation: countdownPulse 1s ease-in-out infinite; }
+        @keyframes progressGlow {
+          0%,100% { box-shadow: 0 0 8px rgba(239,68,68,0.3); }
+          50%      { box-shadow: 0 0 16px rgba(239,68,68,0.6); }
+        }
+        .progress-glow { animation: progressGlow 2s ease-in-out infinite; }
+      `}</style>
+
+      <div className="limit-card-anim flex justify-start items-end gap-2.5">
+        {/* Bot avatar */}
+        <div className="w-8 h-8 rounded-xl flex items-center justify-center text-sm shrink-0 mb-1"
+          style={{ background:"linear-gradient(135deg,#7f1d1d,#dc2626)", boxShadow:"0 0 16px rgba(239,68,68,0.35)" }}>
+          ⏸️
+        </div>
+
+        {/* Card */}
+        <div className="max-w-[80%] md:max-w-[65%] rounded-2xl rounded-bl-sm border overflow-hidden"
+          style={{ background:"rgba(239,68,68,0.05)", backdropFilter:"blur(16px)", borderColor:"rgba(239,68,68,0.25)", boxShadow:"0 4px 30px rgba(239,68,68,0.1)" }}>
+
+          {/* Header strip */}
+          <div className="px-4 py-2.5 flex items-center gap-2"
+            style={{ background:"rgba(239,68,68,0.1)", borderBottom:"1px solid rgba(239,68,68,0.15)" }}>
+            <span className="text-base">{isDaily ? "🚫" : "⏳"}</span>
+            <span className="text-sm font-bold" style={{ fontFamily:"'Syne',sans-serif", color:"#fca5a5" }}>
+              {isDaily ? "Daily Limit Reached" : "Slow Down!"}
+            </span>
+          </div>
+
+          <div className="px-4 py-3">
+            {/* Message */}
+            <p className="text-sm leading-relaxed mb-3" style={{ color:"rgba(255,255,255,0.75)", fontWeight:300 }}>
+              {isDaily
+                ? `Aaj ke ${data.type === "daily" ? "250" : "10"} messages poore ho gaye! Amit kal phir ready rahega.`
+                : "Thoda slow karo bhai — 1 minute mein 10 se zyada messages allowed nahi."}
+            </p>
+
+            {/* Countdown */}
+            <div className="flex items-center gap-3 mb-3 p-2.5 rounded-xl"
+              style={{ background:"rgba(239,68,68,0.08)", border:"1px solid rgba(239,68,68,0.15)" }}>
+              <span className="text-lg">⏱️</span>
+              <div>
+                <div className="text-xs mb-0.5" style={{ color:"rgba(255,255,255,0.35)" }}>
+                  {isDaily ? "Naya session shuru hoga" : "Phir baat kar sakte ho"}
+                </div>
+                <div className="countdown-pulse text-sm font-bold" style={{ fontFamily:"'Syne',sans-serif", color:"#fca5a5" }}>
+                  {countdown}
+                </div>
+              </div>
+            </div>
+
+            {/* Daily progress bar */}
+            {isDaily && (
+              <div>
+                <div className="flex justify-between text-xs mb-1" style={{ color:"rgba(255,255,255,0.3)" }}>
+                  <span>Aaj ka usage</span>
+                  <span style={{ fontFamily:"'Syne',sans-serif" }}>250 / 250</span>
+                </div>
+                <div className="rounded-full overflow-hidden" style={{ height:6, background:"rgba(255,255,255,0.08)" }}>
+                  <div className="progress-glow h-full rounded-full"
+                    style={{ width:"100%", background:"linear-gradient(90deg,#dc2626,#ef4444)" }} />
+                </div>
+              </div>
+            )}
+
+            {/* Tip */}
+            <p className="text-xs mt-2.5" style={{ color:"rgba(255,255,255,0.25)", fontStyle:"italic" }}>
+              {isDaily
+                ? "💡 Tab tak apni workout plan review karo jo Amit ne diya!"
+                : "💡 Deep breath lo — recovery bhi training ka hissa hai! 😄"}
+            </p>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Usage bar in header ──
+function UsageBar({ stats }) {
+  const pct = Math.min(100, (stats.dailyUsed / stats.dailyLimit) * 100);
+  const color = pct >= 100 ? "#ef4444" : pct >= 80 ? "#f97316" : "#34d399";
+
+  return (
+    <div className="flex items-center gap-2" title={`${stats.dailyRemaining} messages remaining today`}>
+      <div className="relative w-16 sm:w-24 rounded-full overflow-hidden" style={{ height:4, background:"rgba(255,255,255,0.08)" }}>
+        <div className="h-full rounded-full transition-all duration-500"
+          style={{ width:`${pct}%`, background:color }} />
+      </div>
+      <span className="text-xs tabular-nums hidden sm:inline"
+        style={{ color, fontFamily:"'Syne',sans-serif", fontSize:10 }}>
+        {stats.dailyRemaining}
+      </span>
+    </div>
+  );
+}
+
 function Chat() {
   const [messages,    setMessages]    = useState([]);
   const [loading,     setLoading]     = useState(false);
   const [showClear,   setShowClear]   = useState(false);
   const [showScroll,  setShowScroll]  = useState(false);
   const [followUps,   setFollowUps]   = useState([]);
+  const [usageStats,  setUsageStats]  = useState(getUsageStats());
   const [sessionStart]                = useState(Date.now());
 
-  const messagesEndRef  = useRef(null);
-  const scrollAreaRef   = useRef(null);
-  const canvasRef       = useRef(null);
+  const messagesEndRef = useRef(null);
+  const scrollAreaRef  = useRef(null);
+  const canvasRef      = useRef(null);
 
   const quickOptions = [
-    { label:"Lose Weight",      emoji:"🔥" },
-    { label:"Gain Muscle",      emoji:"💪" },
-    { label:"Diet Plan",        emoji:"🥗" },
-    { label:"Home Workout",     emoji:"🏠" },
-    { label:"Cardio Tips",      emoji:"🏃" },
-    { label:"Sleep & Recovery", emoji:"😴" },
+    { label:"Lose Weight",       emoji:"🔥" },
+    { label:"Gain Muscle",       emoji:"💪" },
+    { label:"Diet Plan",         emoji:"🥗" },
+    { label:"Home Workout",      emoji:"🏠" },
+    { label:"Cardio Tips",       emoji:"🏃" },
+    { label:"Sleep & Recovery",  emoji:"😴" },
   ];
 
   /* ── Neural canvas ── */
@@ -97,22 +234,17 @@ function Chat() {
     return () => { cancelAnimationFrame(animFrame); window.removeEventListener("resize",resize); window.removeEventListener("resize",buildNodes); };
   }, []);
 
-  /* ── Auto-scroll + show scroll-to-bottom button ── */
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior:"smooth" });
-  }, [messages, loading]);
+  /* ── Auto-scroll ── */
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior:"smooth" }); }, [messages, loading]);
 
   const handleScroll = useCallback(() => {
     const el = scrollAreaRef.current;
     if (!el) return;
-    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    setShowScroll(distFromBottom > 200);
+    setShowScroll(el.scrollHeight - el.scrollTop - el.clientHeight > 200);
   }, []);
 
-  const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior:"smooth" });
-
-  /* ── Session time display ── */
-  const [sessionTime, setSessionTime] = useState("0m");
+  /* ── Session time ── */
+  const [sessionTime, setSessionTime] = useState("< 1m");
   useEffect(() => {
     const iv = setInterval(() => {
       const mins = Math.floor((Date.now() - sessionStart) / 60000);
@@ -128,7 +260,21 @@ function Chat() {
     setMessages(prev => [...prev, { role:"user", text, time }]);
     setFollowUps([]);
     setLoading(true);
+
     const reply = await getFitnessResponse(text);
+
+    // Update usage stats
+    setUsageStats(getUsageStats());
+
+    // Check if limit response
+    if (reply.startsWith("__LIMIT__")) {
+      const limitData = JSON.parse(reply.replace("__LIMIT__", ""));
+      const botTime = new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
+      setMessages(prev => [...prev, { role:"limit", limitData, time:botTime }]);
+      setLoading(false);
+      return;
+    }
+
     const botTime = new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
     setMessages(prev => [...prev, { role:"bot", text:reply, time:botTime }]);
     setLoading(false);
@@ -136,7 +282,6 @@ function Chat() {
   };
 
   const clearChat = () => { setMessages([]); setFollowUps([]); setShowClear(false); };
-
   const userMsgCount = messages.filter(m => m.role === "user").length;
 
   return (
@@ -167,11 +312,9 @@ function Chat() {
         .follow-chip:active{transform:scale(0.95);}
         @keyframes scrollBtnIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
         .scroll-btn{animation:scrollBtnIn 0.2s ease both;transition:transform 0.15s,box-shadow 0.15s;}
-        .scroll-btn:hover{transform:scale(1.08);box-shadow:0 0 20px rgba(52,211,153,0.35)!important;}
+        .scroll-btn:hover{transform:scale(1.08);}
         @keyframes modalIn{from{opacity:0;transform:scale(0.95)}to{opacity:1;transform:scale(1)}}
         .modal-card{animation:modalIn 0.2s cubic-bezier(0.22,1,0.36,1) both;}
-        .clear-btn-danger{transition:background 0.2s,box-shadow 0.2s;}
-        .clear-btn-danger:hover{background:rgba(239,68,68,0.2)!important;box-shadow:0 0 20px rgba(239,68,68,0.2)!important;}
         .header-btn{transition:background 0.18s,border-color 0.18s,transform 0.12s;}
         .header-btn:hover{background:rgba(52,211,153,0.1)!important;border-color:rgba(52,211,153,0.3)!important;transform:scale(1.05);}
         .header-btn:active{transform:scale(0.95);}
@@ -179,14 +322,9 @@ function Chat() {
 
       <div className="chat-root h-screen flex flex-col overflow-hidden relative" style={{background:"#020c18"}}>
 
-        {/* Neural canvas */}
         <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none" style={{zIndex:0}} />
-
-        {/* Scan line */}
         <div className="scan-line absolute left-0 right-0 h-px pointer-events-none"
           style={{background:"linear-gradient(90deg,transparent,rgba(52,211,153,0.4),transparent)",zIndex:1}} />
-
-        {/* Radial glow */}
         <div className="absolute inset-0 pointer-events-none"
           style={{background:"radial-gradient(ellipse 70% 40% at 50% 0%,rgba(52,211,153,0.05) 0%,transparent 70%)",zIndex:1}} />
 
@@ -212,16 +350,15 @@ function Chat() {
           style={{backdropFilter:"blur(32px)",background:"rgba(2,12,24,0.8)",borderColor:"rgba(52,211,153,0.1)"}}>
           <div className="max-w-3xl mx-auto px-4 py-3.5 flex items-center justify-between gap-3">
 
-            {/* Left: logo */}
             <div className="flex items-center gap-3 min-w-0">
               <div className="w-10 h-10 rounded-xl flex items-center justify-center text-lg shrink-0"
                 style={{background:"linear-gradient(135deg,#065f46,#10b981)",boxShadow:"0 0 20px rgba(52,211,153,0.3),inset 0 1px 0 rgba(255,255,255,0.1)"}}>
                 💪
               </div>
               <div className="min-w-0">
-                <div className="font-black text-base tracking-tight leading-none text-white truncate"
+                <div className="font-black text-base tracking-tight leading-none text-white"
                   style={{fontFamily:"'Syne',sans-serif"}}>
-                  FitAI <span className="shimmer-text">Coach</span>
+                  FitAI <span className="shimmer-text">Amit</span>
                 </div>
                 <div className="flex items-center gap-1.5 mt-0.5">
                   <span className="dot1 inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" />
@@ -230,19 +367,19 @@ function Chat() {
               </div>
             </div>
 
-            {/* Right: stats pill + clear btn */}
             <div className="flex items-center gap-2 shrink-0">
-              {/* Session stats */}
-              <div className="border rounded-full px-3 py-1.5 hidden sm:flex items-center gap-2"
+
+              {/* Usage stats pill */}
+              <div className="border rounded-full px-3 py-1.5 flex items-center gap-2"
                 style={{backdropFilter:"blur(16px)",background:"rgba(255,255,255,0.03)",borderColor:"rgba(52,211,153,0.12)"}}>
-                <span style={{fontSize:10,color:"rgba(255,255,255,0.3)"}}>💬 {userMsgCount}</span>
-                <div className="w-px h-3" style={{background:"rgba(255,255,255,0.08)"}} />
-                <span style={{fontSize:10,color:"rgba(255,255,255,0.3)"}}>⏱ {sessionTime}</span>
-                <div className="w-px h-3" style={{background:"rgba(255,255,255,0.08)"}} />
-                <span style={{fontSize:10,fontWeight:600,color:"#34d399",fontFamily:"'Syne',sans-serif"}}>AI Coach</span>
+                <UsageBar stats={usageStats} />
+                <div className="w-px h-3 hidden sm:block" style={{background:"rgba(255,255,255,0.08)"}} />
+                <span className="hidden sm:inline text-xs" style={{color:"rgba(255,255,255,0.3)"}}>💬 {userMsgCount}</span>
+                <div className="w-px h-3 hidden sm:block" style={{background:"rgba(255,255,255,0.08)"}} />
+                <span className="text-xs font-semibold hidden sm:inline" style={{color:"#34d399",fontFamily:"'Syne',sans-serif"}}>⏱ {sessionTime}</span>
               </div>
 
-              {/* Clear chat button */}
+              {/* Clear button */}
               {messages.length > 0 && (
                 <button onClick={() => setShowClear(true)}
                   className="header-btn w-8 h-8 rounded-xl flex items-center justify-center border"
@@ -262,7 +399,6 @@ function Chat() {
           className="messages-scroll flex-1 overflow-y-auto z-10">
           <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
 
-            {/* Empty state */}
             {messages.length === 0 && (
               <div className="fade-up flex flex-col items-center text-center pt-8 pb-4">
                 <div className="w-16 h-16 rounded-2xl flex items-center justify-center text-3xl mb-5 border"
@@ -284,10 +420,23 @@ function Chat() {
                     </button>
                   ))}
                 </div>
+
+                {/* Usage hint in empty state */}
+                <div className="mt-6 flex items-center gap-2 px-4 py-2 rounded-xl"
+                  style={{background:"rgba(52,211,153,0.04)",border:"1px solid rgba(52,211,153,0.1)"}}>
+                  <span style={{fontSize:11,color:"rgba(255,255,255,0.25)"}}>
+                    📊 Aaj {usageStats.dailyRemaining} messages baaki hain
+                  </span>
+                </div>
               </div>
             )}
 
-            {messages.map((msg, i) => <Message key={i} msg={msg} />)}
+            {messages.map((msg, i) => {
+              if (msg.role === "limit") {
+                return <LimitCard key={i} data={msg.limitData} />;
+              }
+              return <Message key={i} msg={msg} />;
+            })}
 
             {/* Typing indicator */}
             {loading && (
@@ -307,19 +456,13 @@ function Chat() {
               </div>
             )}
 
-            {/* ── Follow-up suggestions ── */}
+            {/* Follow-up suggestions */}
             {followUps.length > 0 && !loading && (
               <div className="flex flex-wrap gap-2 pl-10">
                 {followUps.map((f, i) => (
                   <button key={i} onClick={() => { sendMessage(f); setFollowUps([]); }}
                     className="follow-chip text-xs px-3 py-1.5 rounded-xl border"
-                    style={{
-                      animationDelay:`${i*0.07}s`,
-                      background:"rgba(52,211,153,0.05)",
-                      borderColor:"rgba(52,211,153,0.18)",
-                      color:"rgba(255,255,255,0.55)",
-                      fontFamily:"'DM Sans',sans-serif",
-                    }}>
+                    style={{animationDelay:`${i*0.07}s`,background:"rgba(52,211,153,0.05)",borderColor:"rgba(52,211,153,0.18)",color:"rgba(255,255,255,0.55)"}}>
                     {f} ↗
                   </button>
                 ))}
@@ -330,17 +473,11 @@ function Chat() {
           </div>
         </div>
 
-        {/* ── Scroll-to-bottom FAB ── */}
+        {/* Scroll FAB */}
         {showScroll && (
-          <button onClick={scrollToBottom}
+          <button onClick={() => messagesEndRef.current?.scrollIntoView({behavior:"smooth"})}
             className="scroll-btn absolute right-5 z-30 w-10 h-10 rounded-2xl flex items-center justify-center border"
-            style={{
-              bottom:"130px",
-              background:"rgba(4,16,30,0.9)",
-              backdropFilter:"blur(16px)",
-              borderColor:"rgba(52,211,153,0.25)",
-              boxShadow:"0 4px 20px rgba(0,0,0,0.4)",
-            }}>
+            style={{bottom:"130px",background:"rgba(4,16,30,0.9)",backdropFilter:"blur(16px)",borderColor:"rgba(52,211,153,0.25)",boxShadow:"0 4px 20px rgba(0,0,0,0.4)"}}>
             <svg style={{width:16,height:16,color:"#34d399"}} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7"/>
             </svg>
@@ -353,16 +490,14 @@ function Chat() {
           <InputBox sendMessage={sendMessage} />
         </div>
 
-        {/* ── Clear chat modal ── */}
+        {/* ── Clear modal ── */}
         {showClear && (
           <div className="absolute inset-0 z-50 flex items-center justify-center px-4"
             style={{background:"rgba(2,12,24,0.85)",backdropFilter:"blur(12px)"}}>
             <div className="modal-card w-full max-w-xs border rounded-3xl p-7 text-center"
               style={{background:"rgba(5,20,35,0.98)",borderColor:"rgba(52,211,153,0.2)",boxShadow:"0 8px 60px rgba(0,0,0,0.6)"}}>
               <div className="w-14 h-14 mx-auto mb-4 rounded-2xl flex items-center justify-center text-2xl"
-                style={{background:"rgba(239,68,68,0.12)",border:"1px solid rgba(239,68,68,0.25)"}}>
-                🗑️
-              </div>
+                style={{background:"rgba(239,68,68,0.12)",border:"1px solid rgba(239,68,68,0.25)"}}>🗑️</div>
               <h3 className="font-black text-white text-lg mb-1" style={{fontFamily:"'Syne',sans-serif"}}>Clear Chat?</h3>
               <p className="text-sm mb-6" style={{color:"rgba(255,255,255,0.35)",fontWeight:300}}>
                 All {messages.length} messages will be permanently deleted.
@@ -374,7 +509,7 @@ function Chat() {
                   Cancel
                 </button>
                 <button onClick={clearChat}
-                  className="clear-btn-danger flex-1 py-3 rounded-2xl text-sm font-bold border"
+                  className="flex-1 py-3 rounded-2xl text-sm font-bold border"
                   style={{background:"rgba(239,68,68,0.12)",borderColor:"rgba(239,68,68,0.3)",color:"#f87171",fontFamily:"'Syne',sans-serif"}}>
                   Clear All
                 </button>
@@ -382,7 +517,6 @@ function Chat() {
             </div>
           </div>
         )}
-
       </div>
     </>
   );
